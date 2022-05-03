@@ -1,0 +1,276 @@
+---
+title: "UMAP plots"
+author: "David A. Morales-Vicente, Ana Carolina Tahira"
+
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE, warning=F}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Generation of a UMAP model from reference data, and tables containing embedding information 
+
+The first step is to generate a UMAP model from Wendt et al. 2020 <https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE146736> data and save it, then the embedding for each cell is collected into a table. Finaly a table with the median values for each cell type is generated to add a layer of labels to each cell-cluster.
+
+```{r wend_loading_eval,eval=T,echo=F,message=F}
+
+library(Seurat)
+library(tidyverse)
+library(magrittr)
+
+sm_wendt = sm_wendt=readRDS("/work/users/david_morales/schisto/scRNA/collins/publicated/GSE146736_adult_scseq_seurat.rds")
+
+sm_wendt$cell_types = sm_wendt@active.ident
+
+# Generating the UMAP model 
+sm_wendt = RunUMAP(sm_wendt,dims = 1:80,return.model = TRUE,
+                         verbose = T,n.neighbors  = 36, min.dist  =  0.70)
+
+# Saving the embedding, and cell type information for each cell into a table
+wendt_cell_id = sm_wendt$cell_types %>% 
+                  enframe(name = "cell_id",value = "wendt_cluster")  %>% arrange(cell_id) 
+
+wendt_embedding = sm_wendt@reductions$umap@cell.embeddings %>% 
+                    as_tibble(rownames = "cell_id")
+
+wend_umap = wendt_embedding %>% inner_join(wendt_cell_id)
+
+# Making median of UMAP median values for each cell-cluster
+wend_umap_med = wend_umap %>%
+                group_by(wendt_cluster) %>%
+                summarise(umap1 = median(UMAP_1),
+                          umap2 = median(UMAP_2))
+
+# Loading RDS from this project
+
+sm_integrated = readRDS("sm_all_genes.rds")
+
+# Making table of embedding and cell types from current analysis
+
+cell_id  = sm_integrated$orig.ident %>%
+              enframe(name = "cell_id",value = "individual") %>%
+              mutate(group = str_remove(individual,".$"))
+
+cell_id = sm_integrated$predicted.id %>%
+              enframe(name = "cell_id",value = "ref_cluster") %>%
+              inner_join(cell_id)
+
+cell_id = sm_integrated$seurat_clusters %>%
+              enframe(name = "cell_id",value = "seurat_cluster") %>%
+              inner_join(cell_id)
+
+umap_emeddings = sm_integrated@reductions$ref.umap@cell.embeddings %>%
+                  as_tibble(rownames = "cell_id")
+
+cell_id %<>% inner_join(umap_emeddings) %>% arrange(cell_id)
+
+# Making median of UMAP median values for each cell-cluster
+
+label_position = cell_id %>% group_by(ref_cluster) %>%
+                  summarise(umap1 = median(refUMAP_1),
+                            umap2= median(refUMAP_2) )
+
+
+```
+
+```{r wendt_loading_show, eval=F,echo=T, message=F}
+
+library(Seurat)
+library(tidyverse)
+library(magrittr)
+
+# Loading Wendt et al. RDS object
+sm_wendt = readRDS("/path/to/GSE146736_adult_scseq_seurat.rds" )
+sm_wendt$cell_types = sm_wendt@active.ident
+
+# Generating the UMAP model 
+sm_wendt = RunUMAP(sm_wendt,dims = 1:80,return.model = TRUE,
+                         verbose = T,n.neighbors  = 36, min.dist  =  0.70)
+
+# Saving the embedding, and cell type information for each cell into a table
+wendt_cell_id = sm_wendt$cell_types %>% 
+                  enframe(name = "cell_id",value = "wendt_cluster")  %>% arrange(cell_id) 
+
+wendt_embedding = sm_wendt@reductions$umap@cell.embeddings %>% 
+                    as_tibble(rownames = "cell_id")
+
+wend_umap = wendt_embedding %>% inner_join(wendt_cell_id)
+wend_umap_med = wend_umap %>%
+                group_by(wendt_cluster) %>%
+                summarise(umap1 = median(UMAP_1),
+                          umap2 = median(UMAP_2))
+
+# Loading RDS from this project
+
+sm_integrated = readRDS("/path/to/sm_all_genes.rds")
+
+# Making table of embedding and cell types from current analysis
+
+cell_id  = sm_integrated$orig.ident %>%
+              enframe(name = "cell_id",value = "individual") %>%
+              mutate(group = str_remove(individual,".$"))
+
+cell_id = sm_integrated$predicted.id %>%
+              enframe(name = "cell_id",value = "ref_cluster") %>%
+              inner_join(cell_id)
+
+cell_id = sm_integrated$seurat_clusters %>%
+              enframe(name = "cell_id",value = "seurat_cluster") %>%
+              inner_join(cell_id)
+
+umap_embeddings = sm_integrated@reductions$ref.umap@cell.embeddings %>%
+                  as_tibble(rownames = "cell_id")
+
+cell_id %<>% inner_join(umap_embeddings) %>% arrange(cell_id)
+
+label_position = cell_id %>% group_by(ref_cluster) %>%
+                  summarise(umap1 = median(refUMAP_1),
+                            umap2= median(refUMAP_2) )
+
+```
+
+## UMAP cell types
+### Figure 1
+
+```{r cluster_plot, echo=T, message=F,fig.height = 6, fig.width = 6, fig.align = "center"}
+library(ggrepel)
+library(pals)
+
+# Generation of a set of colours for dotplots
+
+umap_colours = alphabet2(26)
+names(umap_colours) = NULL
+
+umap_colours = rep(umap_colours,times = 3)[1:68]
+
+names(umap_colours) = wend_umap_med$wendt_cluster
+umap_colours[umap_colours == "grey70"] = "grey40"
+
+# Making the UMAP plot
+
+umap_plot_g = wendt_embedding %>%
+                ggplot(aes(UMAP_1,UMAP_2)) +
+                geom_point(size = .5,colour = "grey") +
+                geom_point(data = cell_id,aes(refUMAP_1,refUMAP_2,
+                                              colour = ref_cluster),
+                           show.legend = F,
+                           size = .5) +
+                scale_colour_manual(values = umap_colours) +
+                geom_text_repel(data = label_position,aes(umap1,umap2,
+                                                          label = ref_cluster)) +
+                theme_classic() +
+                ylab("UMAP 2") + xlab("UMAP 1")
+
+print(umap_plot_g)
+
+```
+
+## UMAP expression plots
+### Figure 5-8, S1-S3
+
+Using the expression data from the current analysis a function to plot the expression
+of each gene or several genes was written, then the function was used to generate the expression plots
+showed in the figures.
+
+```{r expression_plots ,echo=T,warning=F,message=F,tidy=T,fig.height = 8, fig.width = 16, fig.align = "center"}
+library(cowplot)
+library(patchwork)
+
+# Initiating the sparse expression matrix
+
+matrix = sm_integrated[["RNA"]]@counts
+
+# Expression plot function
+
+feature_plot = function(features = NULL,
+                          log_transformation = T,point_size = 0.5,
+                          plot_cols = c("lightblue","blue","purple","goldenrod2","red"),
+                          ...) {
+  
+  not_found = features[!(features %in% rownames(matrix)) ]
+  
+  if( length(not_found) != 0 ){
+    message(glue::glue("The following genes were not indentified {paste(not_found,collapse=',')}"))
+  }
+  
+  # Susbsetting and transpose sparse expression matrix
+  
+  features = features[ features %in% rownames(matrix) ]
+  matrix = Matrix::t(matrix[features,,drop=F])
+  
+  if(log_transformation){
+    
+    plot_m = matrix %>% 
+                  as_tibble(rownames = "cell_id") %>%
+                  pivot_longer(-cell_id,names_to = "gene",values_to = "counts") %>%
+        # Adding the embedding information
+                  inner_join(cell_id) %>%
+                  group_by(gene) %>%
+        # Log transformation  of counts
+                  mutate(Expression = log10(counts+1),
+                         gene = factor(gene,levels = features)) %>%
+                  arrange(gene,Expression)
+    
+  } else {
+    
+            plot_m = matrix[,features,drop=F] %>% 
+              as_tibble(rownames = "cell_id") %>%
+              pivot_longer(-cell_id,names_to = "gene",values_to = "counts") %>%
+        # Adding the embedding information
+              inner_join(cell_embeddings) %>%
+              group_by(gene) %>%
+
+              mutate(Expression = counts,
+                     gene = factor(gene,levels = features)) %>%
+              arrange(gene,Expression)
+    
+  }
+  
+  g = plot_m %>%
+    ggplot(aes(refUMAP_1,refUMAP_2)) +
+    geom_point(aes(colour = Expression),size = point_size)  +
+    facet_wrap(~gene,...) + 
+    
+    scale_color_gradientn(colours = plot_cols,
+                           limits  = c(0,max(plot_m$Expression)),
+                                       label = function(x) sprintf("%.2f", x),  
+                                       name = "Expression") +
+    
+    theme_cowplot() +
+    theme(axis.title = element_text(face = "bold", size = 18),
+          axis.text = element_text(face = "bold", size = 20),
+          axis.line = element_line(size = 1.5), 
+          legend.title = element_text(angle = 90, hjust = 0.5, 
+                                      face = 2, size = 16), 
+          legend.text = element_text(face=2, size = 16),
+          strip.background = element_blank(),
+          strip.text = element_text(size = 20,hjust = 0,face = "bold"),
+          legend.position = c(.125,.85)) +
+            guides(colour = guide_colourbar(title.position = "left")) +
+    xlab("UMAP-1") +
+    ylab("UMAP-2")
+  
+  rm(matrix,plot_m,cell_embeddings)
+  gc()
+  
+  return(g)
+  
+}
+
+# Printing the plots from figure 5
+
+p5.1 = feature_plot(features = "G39666") # lncRNA target
+p5.2 = feature_plot(features = "Smp-073270") # S. mansoni neural marker 7b2
+
+p = p5.1 + p5.2
+
+print(p)
+
+```
+
+```{r, echo=F,eval=T}
+sessionInfo()
+```

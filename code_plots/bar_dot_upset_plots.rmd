@@ -1,0 +1,391 @@
+---
+title: "Bar, dot, and upset plots"
+author: "David A. Morales-Vicente"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE,message=F,warning=F}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Generation of dendrogram of clusters
+
+To add the dendrogram of cell-clusters to the y-axis of bar, and dot plots it is necessary first build one based on the expression data. We used the median expression data of all cells from the same cell-cluster as the input to calculate the distance and relationship between clusters in the dendrogram.
+
+```{r dendrogram, eval=T,echo=T,include=T,message=F,warning=F}
+
+library(Seurat)
+library(tidyverse)
+library(magrittr)
+library(ggdendro)
+
+# Loading sparse expression matrix from the RDS object of the current analysis
+
+sm_integrated = readRDS("sm_all_genes.rds")
+sm_sp_matrix = sm_integrated[["SCT"]]@counts
+
+# Making table of embedding and cell types from current analysis
+
+cell_id  = sm_integrated$orig.ident %>%
+              enframe(name = "cell_id",value = "individual") %>%
+              mutate(group = str_remove(individual,".$"))
+
+cell_id = sm_integrated$predicted.id %>%
+              enframe(name = "cell_id",value = "ref_cluster") %>%
+              inner_join(cell_id)
+
+cell_id = sm_integrated$seurat_clusters %>%
+              enframe(name = "cell_id",value = "seurat_cluster") %>%
+              inner_join(cell_id)
+
+umap_emeddings = sm_integrated@reductions$ref.umap@cell.embeddings %>%
+                  as_tibble(rownames = "cell_id")
+
+cell_id %<>% inner_join(umap_emeddings) %>% arrange(cell_id)
+
+# Making list of cells by cell-cluster annotation
+
+cell_groups = split(cell_id$cell_id,cell_id$ref_cluster)
+
+# Calculating the median of the expression of the cells by cell-clusters
+
+median_exp_cluster = t(sapply(cell_groups,
+                              function(i) apply(sm_sp_matrix[,i ,drop=F],1,median)))
+
+#Working only in genes identifies as markers
+
+sm_markers_clusters = read_tsv("sm_markers_ref_clusters.tsv")
+
+markers = sm_markers_clusters %>%  ungroup() %>% select(gene) %>% unique() %>% .$gene
+
+median_exp_cluster = median_exp_cluster[,markers]
+
+#Making dendrogram
+
+dd = dist(median_exp_cluster, method = "minkowski")
+hc = hclust(dd, method = "ward.D")
+
+plot_levels = hc$labels[hc$order]
+
+# Plotting dendrogram
+
+ddg = ggdendrogram(hc,rotate = F) + ggtitle("Median Cluster method ward.D")
+print(ddg)
+```
+
+## Matching the cell names between datasets 
+
+To calculated the percentage of cells that remapped to the same cell-cluster it was necessary to match the cell names from the current analys to the cell names from the RDS object from Wendt. et al 2020. 
+
+
+```{r renaming, echo=F,include=T,message=F,warning=F}
+
+# Loading Wendt et al. RDS object
+
+sm_wendt = readRDS("/work/users/david_morales/schisto/scRNA/collins/publicated/GSE146736_adult_scseq_seurat.rds")
+sm_wendt$cell_types = sm_wendt@active.ident
+
+wendt_cell_id = sm_wendt$cell_types %>% 
+                  enframe(name = "cell_id",value = "wendt_cluster")  %>% 
+                  arrange(cell_id)
+
+# Correcting the cell names from the current analysis to have the same cell names from Wendt et al. data
+
+wendt_barcodes = wendt_cell_id %>% mutate(barcode = str_match(cell_id,"(.*)?_")[,2],
+                                          number =  str_match(cell_id,"_(.*)$")[,2])  %>%
+                      group_by(barcode) %>%
+                      summarise(wendt_n = paste(number,collapse = ","))
+
+cell_barcodes = cell_id %>% mutate(barcode = str_match(cell_id,"(.*)?_")[,2],
+                                   number =  str_match(cell_id,"_(.*)$")[,2]) %>%
+                  group_by(barcode) %>%
+                  summarise(number = paste(number,collapse = ","))
+
+
+wendt_to_n = cell_barcodes %>% full_join(wendt_barcodes) %>%
+                filter(!is.na(wendt_n) & !is.na(number)) %>%
+                group_by(number) %>%
+                count(wendt_n) %>% 
+                filter(!( str_detect(number,",") | str_detect(wendt_n,","))) %>%
+                arrange(number,desc(n)) %>%
+                mutate(rank = 1:length(n)) %>%
+                filter(rank == 1) %>% select(number,wendt_n) %>% ungroup()
+
+# Changing the name to the Wendt et al. format
+
+cell_id %<>% mutate(barcode = str_match(cell_id,"(.*)?_")[,2],
+                              number =  str_match(cell_id,"_(.*)$")[,2])  %>%
+              inner_join(wendt_to_n) %>%
+              mutate(old_cell_id = cell_id,
+                     cell_id = paste(barcode,wendt_n,sep="_")) %>%
+  left_join(wendt_cell_id)
+
+```
+
+```{r pressure, echo=T,eval=F,include=FALSE,message=F,warning=F}
+# Loading Wendt et al. RDS object
+
+sm_wendt = readRDS("/path/to/GSE146736_adult_scseq_seurat.rds")
+sm_wendt$cell_types = sm_wendt@active.ident
+
+wendt_cell_id = sm_wendt$cell_types %>% 
+                  enframe(name = "cell_id",value = "wendt_cluster")  %>% 
+                  arrange(cell_id)
+
+# Correcting the cell names from the current analysis to have the same cell names from Wendt et al. data
+
+wendt_barcodes = wendt_cell_id %>% mutate(barcode = str_match(cell_id,"(.*)?_")[,2],
+                                          number =  str_match(cell_id,"_(.*)$")[,2])  %>%
+                      group_by(barcode) %>%
+                      summarise(wendt_n = paste(number,collapse = ","))
+
+cell_barcodes = cell_id %>% mutate(barcode = str_match(cell_id,"(.*)?_")[,2],
+                                   number =  str_match(cell_id,"_(.*)$")[,2]) %>%
+                  group_by(barcode) %>%
+                  summarise(number = paste(number,collapse = ","))
+
+
+wendt_to_n = cell_barcodes %>% full_join(wendt_barcodes) %>%
+                filter(!is.na(wendt_n) & !is.na(number)) %>%
+                group_by(number) %>%
+                count(wendt_n) %>% 
+                filter(!( str_detect(number,",") | str_detect(wendt_n,","))) %>%
+                arrange(number,desc(n)) %>%
+                mutate(rank = 1:length(n)) %>%
+                filter(rank == 1) %>% select(number,wendt_n) %>% ungroup()
+
+# Changing the name to the Wendt et al. format
+
+cell_id %<>% mutate(barcode = str_match(cell_id,"(.*)?_")[,2],
+                              number =  str_match(cell_id,"_(.*)$")[,2])  %>%
+              inner_join(wendt_to_n) %>%
+              mutate(old_cell_id = cell_id,
+                     cell_id = paste(barcode,wendt_n,sep="_")) %>%
+  left_join(wendt_cell_id)
+
+```
+
+## Bar plot
+### Figure 2
+
+Using the data from Wendt et al. 2020 <https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE146736> the percentage of cells that remapped to the same cell-cluster was calculated. 
+
+```{r,fig.height = 14, fig.width = 8, fig.align = "center",message=F,warning=F}
+
+library(ggh4x)
+
+# Counting the number of cells for each cell-cluster 
+
+n_ref_cell_id = wendt_cell_id %>% count(wendt_cluster) %>% 
+                  rename(Wendt = n,
+                         ref_cluster = wendt_cluster)
+
+n_cell_id = cell_id %>% count(ref_cluster) %>% rename(remapping = n)
+
+
+# Counting the number of cells that remapped to the same cell-cluster
+
+p_right_remap = cell_id %>% 
+                  filter(wendt_cluster == ref_cluster) %>%
+                  count(ref_cluster) %>% inner_join(n_ref_cell_id) %>%
+                  mutate(p = n/Wendt*100,
+                         type = "remapped_n") %>%
+                  rename(remapping = n)
+
+# And all the number of cell that belong to a cell-cluster
+
+n_ref_cell_id = n_ref_cell_id %>% inner_join(n_cell_id) %>% 
+                  mutate( p = remapping/Wendt*100,
+                          Wendt = Wendt/Wendt*100) %>% 
+                  mutate(type = "final_n")
+
+p_cell_to_clusters = n_ref_cell_id %>% bind_rows(p_right_remap)
+
+
+# Making the plot
+
+p_cell_to_clusters_g = n_ref_cell_id %>%
+                          ggplot(aes(p,ref_cluster)) +
+                          geom_col(fill = "black",colour = "black",
+                                   show.legend = F) +
+                          theme_classic() +
+                          xlab("Percentage of cells related to Wendt et al") +
+                          scale_x_continuous(breaks = c(25,50,75,100,125,
+                                                        150,175,200,250,300)) +
+                          scale_y_dendrogram(hclust = hc,drop=FALSE) +
+                          theme(axis.title.y = element_blank(),
+                                axis.title = element_text(size =14),
+                                axis.text.x = element_text(size =14),
+                                axis.text.y = element_text(size = 14))
+
+
+p_cell_to_clusters_g = p_cell_to_clusters_g + 
+                          geom_col(data= p_right_remap,aes(p,ref_cluster),
+                                   fill = "white",colour = "black") + 
+                          geom_vline(xintercept = 100,
+                                     linetype = "dashed",colour = "red") +
+                          geom_text(aes(label = remapping),nudge_x = 15,size = 4)+
+                          geom_text(data = p_right_remap,aes(label = remapping),
+                                    position = position_stack(vjust = .5),size = 4) 
+
+
+print(p_cell_to_clusters_g)
+
+```
+
+## Finding the stringent markers
+
+Making the tables containing expression data to use them later for the plots.
+
+```{r markers, message=F, warning=F}
+
+#Loading the table of DE genes by cell-cluster
+
+sm_markers_clusters = read_tsv("sm_markers_ref_clusters.tsv")
+
+# Selecting only the relevant fields of the table and subsetting the lncRNA genes
+sm_markers_sum = sm_markers_clusters %>%
+                    select(cluster,gene,avg_log2FC,p_val_adj,gene_type) %>%
+                    rename(ref_cluster = cluster)
+
+lncRNA_markers = sm_markers_clusters %>% 
+                      filter(gene_type == "lncRNA") %>%
+                      ungroup() %>% select(gene) %>% unique() %>% .$gene
+
+
+## Changing the cell ids names in the SCT sparse matrix to the new cell id
+
+sm_sp_matrix = sm_integrated[["SCT"]]@counts
+sm_sp_matrix_t = Matrix::t(sm_sp_matrix)
+
+cell_id = rownames(sm_sp_matrix_t) %>% 
+           enframe(name = NULL,value = "old_cell_id") %>% inner_join(cell_id)
+
+rownames(sm_sp_matrix_t) = cell_id$cell_id
+
+# Making a table with the SCT gene count information
+
+gene_counts = sm_sp_matrix_t[,colnames(sm_sp_matrix_t) %in% lncRNA_markers] %>%
+                    as_tibble(rownames = "cell_id") %>%
+                    pivot_longer(-cell_id,names_to = "gene",values_to = "counts") %>%
+                    inner_join(cell_id) %>%
+                    arrange(ref_cluster)
+
+# Summarizing data for further selection
+
+lncRNA_counts_sum = gene_counts %>%
+                      group_by(ref_cluster,gene) %>%
+                      summarise(n = sum(counts>0),
+                                t = length(counts),
+                                counts = median(counts),
+                                p = n/t*100)
+
+lncRNA_counts_all = gene_counts %>%
+                      group_by(gene) %>%
+                      summarise(n = sum(counts>0),
+                                t = length(counts),
+                                counts_all = median(counts),
+                                p_all = n/t*100) %>%
+                      select(gene,counts_all,p_all)
+
+lncRNA_counts_sum %<>% inner_join(lncRNA_counts_all) %>%
+                    mutate(p_ratio = p/p_all) %>%
+                    select(ref_cluster,gene,counts,counts_all,contains("p"))
+```
+
+## Dot plot
+### Figure 3
+
+Dotplot of the lncRNA markers showing the percentage of cells expressing a lncRNA and the median expression of that lncRNAs in a cell-cluster.
+
+```{r,fig.height = 14, fig.width = 17, fig.align = "center", message=F, warning= F}
+
+# Making list of top cell-clusters lncRNA markers, those with a median SCT count greater than 1 in a cell-cluster compare to the median of all the other cells
+
+lcnRNA_top_markers = lncRNA_counts_sum %>%
+                      inner_join(sm_markers_sum) %>%
+                      filter(counts >= 1)  %>%
+                      filter(counts - counts_all >= 1) %>% 
+                      mutate(ref_cluster = factor(ref_cluster,levels = plot_levels)) %>%
+                      arrange(ref_cluster) %>%
+                      .$gene %>% unique()
+
+# Making the dotplot
+
+dot_plot_g = lncRNA_counts_sum %>%
+                filter(gene %in% lcnRNA_top_markers) %>%
+                mutate(ref_cluster = factor(ref_cluster,levels = plot_levels),
+                       gene = factor(gene,levels = lcnRNA_top_markers)) %>%
+                
+                group_by(gene) %>%
+                
+                mutate(Scale = scale(counts,center = T)) %>%
+                filter(p > 1,ref_cluster != "hes2+") %>% 
+                
+                ggplot(aes(gene,ref_cluster)) +
+                geom_point(aes(size = p,colour = Scale ))  +
+                
+                scale_size_binned(name = "Percent (%)\nof cells",range = c(0,5)) +
+                scale_y_dendrogram(hclust = hc,drop=FALSE) +
+                
+                cowplot::theme_cowplot() +
+                theme(axis.ticks = element_blank()) +
+                scale_colour_stepsn(colours = c("grey","blue","purple","yellow","red")) +
+                
+                theme(axis.text.x = element_text(angle = 90,vjust = 0.5,hjust = 0.5),
+                      axis.text = element_text(size = 14),
+                      axis.text.y = element_text(size = 13),
+                      axis.title = element_blank(),
+                      axis.ticks = element_blank(),
+                      axis.line = element_blank(),
+                      legend.title = element_text(size = 16),
+                      legend.text = element_text(size = 16)) 
+
+print(dot_plot_g)
+
+```
+
+## Upset plot
+### Figure 4
+
+Upset plot showing the number of shared and unique lncRNA markers in the cell-clusters of the adult worm S. masoni.
+
+```{r,fig.height = 16, fig.width = 8, fig.align = "center",message=F,warning=F}
+
+library(ggupset)
+
+#Picking best lncRNA marker by group and plotting
+
+lncRNA_upset_g = lncRNA_counts_sum %>%
+                  inner_join(sm_markers_sum) %>%
+  
+  # Selection of the lncRNAs with stringent criteria
+  
+            mutate(ref_cluster = factor(ref_cluster,levels = plot_levels)) %>%
+            filter(counts >= 1)  %>%
+            filter(counts - counts_all >= 1) %>%
+            filter(ref_cluster != "hes2+") %>% # lost cell-cluster after remapping
+  
+            mutate(score = counts*avg_log2FC) %>%
+            arrange(ref_cluster,desc(score)) %>%
+            group_by(gene) %>%
+            summarise(cluster = list(ref_cluster)) %>%
+            ggplot(aes(x = cluster)) +
+            geom_bar() +
+            scale_x_upset(sets = plot_levels,reverse = F,
+                          order_by = "degree",name = "") +
+            theme_combmatrix(combmatrix.label.text = element_text(size=16),
+                             combmatrix.panel.striped_background.color.one = "grey",
+                             combmatrix.panel.striped_background.color.two = "white",
+                             combmatrix.label.extra_spacing = 5,
+                             text = element_text(size=16)) 
+print(lncRNA_upset_g)
+
+```
+
+
+```{r, echo=F,eval=T}
+sessionInfo()
+```
